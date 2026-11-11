@@ -1,5 +1,5 @@
 {
-  "name": "saksham-pro-music-bot",
+  "name": "saksham-music-pro",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
@@ -8,6 +8,7 @@
   "dependencies": {
     "discord.js": "^14.16.3",
     "@discordjs/voice": "^0.17.0",
+    "yt-search": "^2.12.1",
     "ffmpeg-static": "^5.2.0",
     "tweetnacl": "^1.0.3",
     "libsodium-wrappers": "^0.7.15",
