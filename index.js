@@ -1,7 +1,6 @@
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } = require('discord.js');
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, getVoiceConnection, NoSubscriberBehavior, StreamType } = require('@discordjs/voice');
-const yts = require('yt-search');
-const ytdl = require('@distube/ytdl-core');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, getVoiceConnection, NoSubscriberBehavior } = require('@discordjs/voice');
+const play = require('play-dl');
 const express = require('express');
 
 const app = express();
@@ -25,7 +24,7 @@ const commands = [
         .setDescription('Play any song without any error')
         .addStringOption(option => 
             option.setName('song')
-                .setDescription('Enter song name or YouTube link')
+                .setDescription('Enter song name')
                 .setRequired(true)),
     new SlashCommandBuilder().setName('skip').setDescription('Skip to the next song in the queue'),
     new SlashCommandBuilder().setName('stop').setDescription('Stop the music and leave the voice channel'),
@@ -47,6 +46,14 @@ function createEmbed(title, description, color = '#00FF88', thumbnail = null) {
 client.on('ready', async () => {
     console.log(`${client.user.tag} is online and ready!`);
 
+    try {
+        const scClientID = await play.getFreeClientID();
+        await play.setToken({ soundcloud: { client_id: scClientID } });
+        console.log('SoundCloud Free Audio Engine Ready!');
+    } catch (e) {
+        console.log('SC Init Warning:', e.message);
+    }
+
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: [] });
@@ -65,15 +72,9 @@ async function playNextSong(guildId) {
 
     const song = serverQueue.songs.at(0);
     try {
-        const stream = ytdl(song.url, {
-            filter: 'audioonly',
-            quality: 'highestaudio',
-            highWaterMark: 1 << 25,
-            dlChunkSize: 0
-        });
-
-        const resource = createAudioResource(stream, {
-            inputType: StreamType.Arbitrary,
+        const stream = await play.stream(song.url);
+        const resource = createAudioResource(stream.stream, {
+            inputType: stream.type,
             inlineVolume: true
         });
         resource.volume.setVolume(1);
@@ -127,29 +128,22 @@ client.on('interactionCreate', async interaction => {
         const query = interaction.options.getString('song');
 
         try {
-            let songInfo;
-            if (ytdl.validateURL(query)) {
-                const info = await ytdl.getBasicInfo(query);
-                const thumbs = info.videoDetails.thumbnails;
-                songInfo = {
-                    title: info.videoDetails.title,
-                    url: info.videoDetails.video_url,
-                    duration: info.videoDetails.lengthSeconds + 's',
-                    thumbnail: thumbs && thumbs.length > 0 ? thumbs.at(-1).url : null
-                };
-            } else {
-                const searchResults = await yts(query);
-                if (!searchResults || !searchResults.videos || searchResults.videos.length === 0) {
-                    return interaction.editReply({ embeds: [createEmbed('❌ Not Found', 'No results found for this song. Please try another name.', '#FF4444')] });
-                }
-                const video = searchResults.videos.at(0);
-                songInfo = {
-                    title: video.title,
-                    url: video.url,
-                    duration: video.timestamp,
-                    thumbnail: video.thumbnail
-                };
+            const searchResults = await play.search(query, {
+                source: { soundcloud: 'tracks' },
+                limit: 1
+            });
+
+            if (!searchResults || searchResults.length === 0) {
+                return interaction.editReply({ embeds: [createEmbed('❌ Not Found', 'No results found for this song. Please try another name.', '#FF4444')] });
             }
+
+            const track = searchResults.at(0);
+            const songInfo = {
+                title: track.name,
+                url: track.url,
+                duration: track.durationRaw || 'Live',
+                thumbnail: track.thumbnail || null
+            };
 
             let serverQueue = queues.get(guild.id);
 
