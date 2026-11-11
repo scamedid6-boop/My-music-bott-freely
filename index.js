@@ -1,6 +1,7 @@
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, getVoiceConnection, NoSubscriberBehavior } = require('@discordjs/voice');
-const play = require('play-dl');
+const yts = require('yt-search');
+const ytdl = require('@distube/ytdl-core');
 const express = require('express');
 
 const app = express();
@@ -21,10 +22,10 @@ const commands = [
     new SlashCommandBuilder().setName('join').setDescription('Joins your voice channel and start playing music'),
     new SlashCommandBuilder()
         .setName('play')
-        .setDescription('Play any song from YouTube or SoundCloud')
+        .setDescription('Play any song without any error')
         .addStringOption(option => 
             option.setName('song')
-                .setDescription('Enter song name or link')
+                .setDescription('Enter song name or YouTube link')
                 .setRequired(true)),
     new SlashCommandBuilder().setName('skip').setDescription('Skip to the next song in the queue'),
     new SlashCommandBuilder().setName('stop').setDescription('Stop the music and leave the voice channel'),
@@ -32,13 +33,23 @@ const commands = [
     new SlashCommandBuilder().setName('hello').setDescription('Say hello to the bot')
 ].map(command => command.toJSON());
 
+function createEmbed(title, description, color = '#00FF88', thumbnail = null) {
+    const embed = new EmbedBuilder()
+        .setTitle(title)
+        .setDescription(description)
+        .setColor(color)
+        .setFooter({ text: 'SAKSHAM MUSIC • 24/7 Live' })
+        .setTimestamp();
+    if (thumbnail) embed.setThumbnail(thumbnail);
+    return embed;
+}
+
 client.on('ready', async () => {
     console.log(`${client.user.tag} taiyar hai!`);
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        
         client.guilds.cache.forEach(async (guild) => {
             await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: commands });
             console.log(`Server [${guild.name}] mein commands add ho gaye!`);
@@ -52,15 +63,28 @@ async function playNextSong(guildId) {
     const serverQueue = queues.get(guildId);
     if (!serverQueue || serverQueue.songs.length === 0) return;
 
-    const song = serverQueue.songs[0];
+    const song = serverQueue.songs;
     try {
-        const stream = await play.stream(song.url);
-        const resource = createAudioResource(stream.stream, { inputType: stream.type });
+        const stream = ytdl(song.url, {
+            filter: 'audioonly',
+            quality: 'highestaudio',
+            highWaterMark: 1 << 25
+        });
+
+        const resource = createAudioResource(stream);
         serverQueue.player.play(resource);
-        serverQueue.textChannel.send(`🎶 **Ab Baj Raha Hai:** ${song.title}`);
+
+        const embed = createEmbed(
+            '🎶 Now Playing',
+            `**[${song.title}](${song.url})**\n⏱️ **Duration:** ${song.duration}`,
+            '#FF007F',
+            song.thumbnail
+        );
+        serverQueue.textChannel.send({ embeds: [embed] });
     } catch (err) {
         console.error('Stream Error:', err);
-        serverQueue.textChannel.send(`⚠️ **${song.title}** bajane mein dikkat aayi, agla gaana laga raha hoon...`);
+        const errEmbed = createEmbed('⚠️ Playback Error', `**${song.title}** bajane mein dikkat aayi, agla gaana laga raha hoon...`, '#FF4444');
+        serverQueue.textChannel.send({ embeds: [errEmbed] });
         serverQueue.songs.shift();
         playNextSong(guildId);
     }
@@ -73,7 +97,9 @@ client.on('interactionCreate', async interaction => {
 
     if (commandName === 'join') {
         const channel = interaction.member.voice.channel;
-        if (!channel) return interaction.reply({ content: '❌ Bhai, pehle kisi Voice Channel mein join ho jao!', ephemeral: true });
+        if (!channel) {
+            return interaction.reply({ embeds: [createEmbed('❌ Error', 'Bhai, pehle kisi Voice Channel mein join ho jao!', '#FF4444')], ephemeral: true });
+        }
 
         joinVoiceChannel({
             channelId: channel.id,
@@ -81,27 +107,40 @@ client.on('interactionCreate', async interaction => {
             adapterCreator: guild.voiceAdapterCreator,
         });
 
-        return interaction.reply(`✅ **${channel.name}** mein aa gaya hoon! Ab \`/play\` se koi bhi gana bajayein.`);
+        return interaction.reply({ embeds: [createEmbed('✅ Connected', `**${channel.name}** mein aa gaya hoon! Ab \`/play\` se koi bhi gana bajayein.`, '#00FF88')] });
     }
 
     if (commandName === 'play') {
         const channel = interaction.member.voice.channel;
-        if (!channel) return interaction.reply({ content: '❌ Bhai, pehle kisi Voice Channel mein join ho jao!', ephemeral: true });
+        if (!channel) {
+            return interaction.reply({ embeds: [createEmbed('❌ Error', 'Bhai, pehle kisi Voice Channel mein join ho jao!', '#FF4444')], ephemeral: true });
+        }
 
         await interaction.deferReply();
         const query = interaction.options.getString('song');
 
         try {
             let songInfo;
-            if (play.yt_validate(query) === 'video') {
-                const info = await play.video_info(query);
-                songInfo = { title: info.video_details.title, url: info.video_details.url };
+            if (ytdl.validateURL(query)) {
+                const info = await ytdl.getBasicInfo(query);
+                songInfo = {
+                    title: info.videoDetails.title,
+                    url: info.videoDetails.video_url,
+                    duration: info.videoDetails.lengthSeconds + 's',
+                    thumbnail: info.videoDetails.thumbnails?.url || null
+                };
             } else {
-                const searchResults = await play.search(query, { limit: 1 });
-                if (!searchResults || searchResults.length === 0) {
-                    return interaction.editReply('❌ Yeh gaana nahi mila bhai, koi doosra naam try karo.');
+                const searchResults = await yts(query);
+                if (!searchResults || !searchResults.videos || searchResults.videos.length === 0) {
+                    return interaction.editReply({ embeds: [createEmbed('❌ Not Found', 'Yeh gaana nahi mila bhai, koi doosra naam try karo.', '#FF4444')] });
                 }
-                songInfo = { title: searchResults[0].title, url: searchResults[0].url };
+                const video = searchResults.videos;
+                songInfo = {
+                    title: video.title,
+                    url: video.url,
+                    duration: video.timestamp,
+                    thumbnail: video.thumbnail
+                };
             }
 
             let serverQueue = queues.get(guild.id);
@@ -138,48 +177,44 @@ client.on('interactionCreate', async interaction => {
                     playNextSong(guild.id);
                 });
 
-                await interaction.editReply(`✅ **Start kar raha hoon:** ${songInfo.title}`);
+                await interaction.editReply({ embeds: [createEmbed('🎧 Starting Music', `**[${songInfo.title}](${songInfo.url})**`, '#00BFFF', songInfo.thumbnail)] });
                 playNextSong(guild.id);
             } else {
                 serverQueue.songs.push(songInfo);
-                return interaction.editReply(`✅ **Queue mein add ho gaya:** ${songInfo.title}`);
+                return interaction.editReply({ embeds: [createEmbed('✅ Added to Queue', `**[${songInfo.title}](${songInfo.url})**\n⏱️ **Duration:** ${songInfo.duration}`, '#00FF88', songInfo.thumbnail)] });
             }
         } catch (error) {
             console.error(error);
-            return interaction.editReply('❌ Gaana search karne mein thodi dikkat aayi, dubara try karein.');
+            return interaction.editReply({ embeds: [createEmbed('❌ Search Error', 'Gaana load karne mein dikkat aayi, dubara try karein.', '#FF4444')] });
         }
     }
 
     if (commandName === 'skip') {
         const serverQueue = queues.get(guild.id);
         if (!serverQueue || serverQueue.songs.length === 0) {
-            return interaction.reply({ content: '❌ Abhi koi gana nahi baj raha hai!', ephemeral: true });
+            return interaction.reply({ embeds: [createEmbed('❌ Error', 'Abhi koi gana nahi baj raha hai!', '#FF4444')], ephemeral: true });
         }
         serverQueue.player.stop();
-        return interaction.reply('⏭️ Agla gaana laga diya gaya hai!');
+        return interaction.reply({ embeds: [createEmbed('⏭️ Skipped', 'Agla gaana laga diya gaya hai!', '#FFA500')] });
     }
 
     if (commandName === 'stop') {
         const connection = getVoiceConnection(guild.id);
-        if (!connection) return interaction.reply({ content: '❌ Main abhi kisi voice channel mein nahi hoon!', ephemeral: true });
-
+        if (!connection) {
+            return interaction.reply({ embeds: [createEmbed('❌ Error', 'Main abhi kisi voice channel mein nahi hoon!', '#FF4444')], ephemeral: true });
+        }
         queues.delete(guild.id);
         connection.destroy();
-        return interaction.reply('🛑 Gaana rok diya gaya hai aur main channel se nikal gaya hoon.');
+        return interaction.reply({ embeds: [createEmbed('🛑 Stopped', 'Gaana rok diya gaya hai aur main channel se nikal gaya hoon.', '#FF4444')] });
     }
 
     if (commandName === 'owner') {
-        return interaction.reply('👑 Mera malik aur mujhe banane wale **Saksham Bhai** hain!');
+        return interaction.reply({ embeds: [createEmbed('👑 Bot Owner', 'Mera malik aur mujhe banane wale **Saksham Bhai** hain!', '#FFD700')] });
     }
 
     if (commandName === 'hello') {
-        return interaction.reply('Ram Ram bhai! Main 24/7 non-stop music bot hoon. 🎧');
+        return interaction.reply({ embeds: [createEmbed('👋 Ram Ram Bhai!', 'Main **SAKSHAM MUSIC** hoon — 24/7 non-stop music bot! 🎧', '#00FF88')] });
     }
 });
 
-console.log("Token check:", process.env.DISCORD_TOKEN ? "Token mil gaya!" : "Token GAYAB hai!");
-
-client.login(process.env.DISCORD_TOKEN).catch(err => {
-    console.error("Login Error:", err);
-});
-
+client.login(process.env.DISCORD_TOKEN);
