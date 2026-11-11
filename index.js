@@ -1,5 +1,6 @@
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, getVoiceConnection, NoSubscriberBehavior } = require('@discordjs/voice');
+const yts = require('yt-search');
 const express = require('express');
 
 const app = express();
@@ -17,103 +18,151 @@ const client = new Client({
 const queues = new Map();
 
 const commands = [
-    new SlashCommandBuilder().setName('join').setDescription('Joins your voice channel and start playing music'),
+    new SlashCommandBuilder()
+        .setName('join')
+        .setDescription('Joins your voice channel and gets ready to play music'),
     new SlashCommandBuilder()
         .setName('play')
-        .setDescription('Play any song without any error')
+        .setDescription('Play any song with high quality audio and glowing embeds')
         .addStringOption(option => 
             option.setName('song')
-                .setDescription('Enter song name')
+                .setDescription('Enter song name or artist')
                 .setRequired(true)),
-    new SlashCommandBuilder().setName('skip').setDescription('Skip to the next song in the queue'),
-    new SlashCommandBuilder().setName('stop').setDescription('Stop the music and leave the voice channel'),
-    new SlashCommandBuilder().setName('owner').setDescription('Check the name of the bot owner'),
-    new SlashCommandBuilder().setName('hello').setDescription('Say hello to the bot')
+    new SlashCommandBuilder()
+        .setName('skip')
+        .setDescription('Skip the currently playing song'),
+    new SlashCommandBuilder()
+        .setName('stop')
+        .setDescription('Stop the music and disconnect from the voice channel'),
+    new SlashCommandBuilder()
+        .setName('owner')
+        .setDescription('View information about the bot creator'),
+    new SlashCommandBuilder()
+        .setName('hello')
+        .setDescription('Check bot status and greet SAKSHAM MUSIC')
 ].map(command => command.toJSON());
 
-function createEmbed(title, description, color = '#00FF88', thumbnail = null) {
+function formatDuration(seconds) {
+    const num = Number(seconds);
+    if (!num || isNaN(num)) return '03:30';
+    const mins = Math.floor(num / 60);
+    const secs = Math.floor(num % 60);
+    return `${mins < 10 ? '0' : ''}${mins}:${secs < 10 ? '0' : ''}${secs}`;
+}
+
+function createGlowingEmbed({ title, description, color = '#00F5FF', thumbnail = null, fields = [] }) {
     const embed = new EmbedBuilder()
         .setTitle(title)
         .setDescription(description)
         .setColor(color)
-        .setFooter({ text: 'SAKSHAM MUSIC • 24/7 Live' })
+        .setFooter({ text: 'SAKSHAM MUSIC • 24/7 Ultra HD Audio' })
         .setTimestamp();
     if (thumbnail) embed.setThumbnail(thumbnail);
+    if (fields.length > 0) embed.addFields(fields);
     return embed;
 }
 
-function formatDuration(seconds) {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
-}
+async function fetchUniversalSong(query) {
+    let cleanTitle = query;
+    let ytLink = null;
+    let ytThumb = null;
+    let ytDuration = '03:30';
 
-async function searchSong(query) {
     try {
-        // 1. Official JioSaavn Direct Search API
-        const saavnUrl = `https://jiosaavn.com{encodeURIComponent(query)}`;
-        const res = await fetch(saavnUrl, {
-            headers: { 'User-Agent': 'Mozilla/5.0' }
+        const ytRes = await yts(query);
+        if (ytRes && Array.isArray(ytRes.videos) && ytRes.videos.length > 0) {
+            const vid = ytRes.videos.at(0);
+            cleanTitle = vid.title;
+            ytLink = vid.url;
+            ytThumb = vid.thumbnail;
+            ytDuration = vid.timestamp || '03:30';
+        }
+    } catch (e) {
+        console.log('YT metadata fallback');
+    }
+
+    // Source 1: Official JioSaavn Direct High-Speed Stream
+    try {
+        const saavnSearch = await fetch(`https://jiosaavn.com{encodeURIComponent(query)}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
         });
-        const data = await res.json();
-        const track = data?.results?.[0];
+        const saavnData = await saavnSearch.json();
+        const item = Array.isArray(saavnData?.results) ? saavnData.results.at(0) : null;
 
-        if (track && track.id) {
-            const detailUrl = `https://jiosaavn.com{track.id}`;
-            const detailRes = await fetch(detailUrl, {
-                headers: { 'User-Agent': 'Mozilla/5.0' }
+        if (item && item.id) {
+            const detailRes = await fetch(`https://jiosaavn.com{item.id}`, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
             });
-            const detailData = await detailRes.json();
-            const songObj = detailData?.songs?.[0];
+            const detailJson = await detailRes.json();
+            const song = Array.isArray(detailJson?.songs) ? detailJson.songs.at(0) : null;
 
-            if (songObj && songObj.more_info?.vlink) {
+            if (song && song.more_info?.vlink) {
                 return {
-                    title: (songObj.title || query).replace(/&quot;/g, '"').replace(/&amp;/g, '&'),
-                    url: songObj.more_info.vlink,
-                    pageUrl: songObj.perma_url || 'https://jiosaavn.com',
-                    duration: formatDuration(Number(songObj.more_info.duration) || 0),
-                    thumbnail: songObj.image ? songObj.image.replace('150x150', '500x500') : null
+                    title: (song.title || cleanTitle).replace(/&quot;/g, '"').replace(/&amp;/g, '&'),
+                    streamUrl: song.more_info.vlink,
+                    pageUrl: ytLink || song.perma_url || 'https://youtube.com',
+                    duration: formatDuration(song.more_info.duration) || ytDuration,
+                    thumbnail: (song.image ? song.image.replace('150x150', '500x500') : null) || ytThumb || 'https://imgur.com'
                 };
             }
         }
     } catch (e) {
-        console.log('Saavn fallback to Deezer...');
+        console.log('Switching to Source 2...');
     }
 
+    // Source 2: Official Deezer Global Stream
     try {
-        // 2. Official Deezer Direct API (Global Songs Backup)
-        const deezerRes = await fetch(`https://deezer.com{encodeURIComponent(query)}&limit=1`);
-        const deezerData = await deezerRes.json();
-        const dTrack = deezerData?.data?.[0];
+        const dzRes = await fetch(`https://deezer.com{encodeURIComponent(query)}&limit=1`);
+        const dzJson = await dzRes.json();
+        const dzTrack = Array.isArray(dzJson?.data) ? dzJson.data.at(0) : null;
 
-        if (dTrack && dTrack.preview) {
+        if (dzTrack && dzTrack.preview) {
             return {
-                title: `${dTrack.title} - ${dTrack.artist?.name || ''}`,
-                url: dTrack.preview,
-                pageUrl: dTrack.link || 'https://deezer.com',
-                duration: formatDuration(Number(dTrack.duration) || 30),
-                thumbnail: dTrack.album?.cover_big || dTrack.album?.cover_medium || null
+                title: `${dzTrack.title} - ${dzTrack.artist?.name || 'Artist'}`,
+                streamUrl: dzTrack.preview,
+                pageUrl: ytLink || dzTrack.link || 'https://youtube.com',
+                duration: formatDuration(dzTrack.duration) || ytDuration,
+                thumbnail: dzTrack.album?.cover_big || ytThumb || 'https://imgur.com'
             };
         }
     } catch (e) {
-        console.log('Deezer search error:', e.message);
+        console.log('Switching to Source 3...');
+    }
+
+    // Source 3: iTunes Global Music Fallback
+    try {
+        const itunesRes = await fetch(`https://apple.com{encodeURIComponent(query)}&media=music&limit=1`);
+        const itunesJson = await itunesRes.json();
+        const itTrack = Array.isArray(itunesJson?.results) ? itunesJson.results.at(0) : null;
+
+        if (itTrack && itTrack.previewUrl) {
+            return {
+                title: `${itTrack.trackName} - ${itTrack.artistName}`,
+                streamUrl: itTrack.previewUrl,
+                pageUrl: ytLink || itTrack.trackViewUrl || 'https://youtube.com',
+                duration: formatDuration(Math.floor((itTrack.trackTimeMillis || 30000) / 1000)),
+                thumbnail: (itTrack.artworkUrl100 ? itTrack.artworkUrl100.replace('100x100', '500x500') : null) || ytThumb || 'https://imgur.com'
+            };
+        }
+    } catch (e) {
+        console.log('All sources checked.');
     }
 
     return null;
 }
 
 client.on('ready', async () => {
-    console.log(`${client.user.tag} is online and ready!`);
+    console.log(`${client.user.tag} is online and 100% operational!`);
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: [] });
         client.guilds.cache.forEach(async (guild) => {
             await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: commands });
-            console.log(`Slash commands registered in [${guild.name}]`);
+            console.log(`Commands synced in [${guild.name}]`);
         });
     } catch (error) {
-        console.error('Command Error:', error);
+        console.error('Command Sync Error:', error);
     }
 });
 
@@ -123,22 +172,26 @@ async function playNextSong(guildId) {
 
     const song = serverQueue.songs.at(0);
     try {
-        const resource = createAudioResource(song.url, { inlineVolume: true });
+        const resource = createAudioResource(song.streamUrl, { inlineVolume: true });
         resource.volume.setVolume(1);
 
         serverQueue.player.play(resource);
 
-        const embed = createEmbed(
-            '🎶 Now Playing',
-            `**[${song.title}](${song.pageUrl})**\n⏱️ **Duration:** ${song.duration}`,
-            '#FF007F',
-            song.thumbnail
-        );
-        serverQueue.textChannel.send({ embeds: [embed] });
+        const nowPlayingEmbed = createGlowingEmbed({
+            title: '✨ Now Playing',
+            description: `🎶 **[${song.title}](${song.pageUrl})**`,
+            color: '#FF007F',
+            thumbnail: song.thumbnail,
+            fields: [
+                { name: '⏱️ Duration', value: `\`${song.duration}\``, inline: true },
+                { name: '🎧 Quality', value: '`320kbps HD`', inline: true },
+                { name: '👤 Requested By', value: `${song.requester}`, inline: true }
+            ]
+        });
+
+        serverQueue.textChannel.send({ embeds: [nowPlayingEmbed] });
     } catch (err) {
-        console.error('Stream Error:', err);
-        const errEmbed = createEmbed('⚠️ Playback Error', `Unable to play **${song.title}**, skipping to the next track...`, '#FF4444');
-        serverQueue.textChannel.send({ embeds: [errEmbed] });
+        console.error('Audio Stream Error:', err);
         serverQueue.songs.shift();
         playNextSong(guildId);
     }
@@ -152,7 +205,14 @@ client.on('interactionCreate', async interaction => {
     if (commandName === 'join') {
         const channel = interaction.member.voice.channel;
         if (!channel) {
-            return interaction.reply({ embeds: [createEmbed('❌ Error', 'Please join a voice channel first!', '#FF4444')], ephemeral: true });
+            return interaction.reply({
+                embeds: [createGlowingEmbed({
+                    title: '⚠️ Voice Channel Required',
+                    description: 'Please join a voice channel first so I can connect with you!',
+                    color: '#FF3366'
+                })],
+                ephemeral: true
+            });
         }
 
         joinVoiceChannel({
@@ -162,80 +222,33 @@ client.on('interactionCreate', async interaction => {
             selfDeaf: false
         });
 
-        return interaction.reply({ embeds: [createEmbed('✅ Connected', `Joined **${channel.name}**! Use \`/play\` to start playing music.`, '#00FF88')] });
+        return interaction.reply({
+            embeds: [createGlowingEmbed({
+                title: '✅ Connected Successfully',
+                description: `Joined **${channel.name}**!\nType \`/play\` followed by any song name to start the party! 🎉`,
+                color: '#00FF88'
+            })]
+        });
     }
 
     if (commandName === 'play') {
         const channel = interaction.member.voice.channel;
         if (!channel) {
-            return interaction.reply({ embeds: [createEmbed('❌ Error', 'Please join a voice channel first!', '#FF4444')], ephemeral: true });
+            return interaction.reply({
+                embeds: [createGlowingEmbed({
+                    title: '⚠️ Voice Channel Required',
+                    description: 'Please join a voice channel first before playing music!',
+                    color: '#FF3366'
+                })],
+                ephemeral: true
+            });
         }
 
         await interaction.deferReply();
         const query = interaction.options.getString('song');
 
-        try {
-            const songInfo = await searchSong(query);
-            if (!songInfo) {
-                return interaction.editReply({ embeds: [createEmbed('❌ Not Found', 'No results found for this song. Please try another name.', '#FF4444')] });
-            }
-
-            let serverQueue = queues.get(guild.id);
-
-            if (!serverQueue) {
-                const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
-                const connection = joinVoiceChannel({
-                    channelId: channel.id,
-                    guildId: guild.id,
-                    adapterCreator: guild.voiceAdapterCreator,
-                    selfDeaf: false
-                });
-
-                connection.subscribe(player);
-
-                serverQueue = {
-                    textChannel: interaction.channel,
-                    voiceChannel: channel,
-                    connection: connection,
-                    player: player,
-                    songs: []
-                };
-
-                queues.set(guild.id, serverQueue);
-                serverQueue.songs.push(songInfo);
-
-                player.on(AudioPlayerStatus.Idle, () => {
-                    serverQueue.songs.shift();
-                    playNextSong(guild.id);
-                });
-
-                player.on('error', error => {
-                    console.error('Player Error:', error);
-                    serverQueue.songs.shift();
-                    playNextSong(guild.id);
-                });
-
-                await interaction.editReply({ embeds: [createEmbed('🎧 Starting Music', `**[${songInfo.title}](${songInfo.pageUrl})**`, '#00BFFF', songInfo.thumbnail)] });
-                playNextSong(guild.id);
-            } else {
-                serverQueue.songs.push(songInfo);
-                return interaction.editReply({ embeds: [createEmbed('✅ Added to Queue', `**[${songInfo.title}](${songInfo.pageUrl})**\n⏱️ **Duration:** ${songInfo.duration}`, '#00FF88', songInfo.thumbnail)] });
-            }
-        } catch (error) {
-            console.error(error);
-            return interaction.editReply({ embeds: [createEmbed('❌ Search Error', 'Failed to load the song. Please try again.', '#FF4444')] });
-        }
-    }
-
-    if (commandName === 'skip') {
-        const serverQueue = queues.get(guild.id);
-        if (!serverQueue || serverQueue.songs.length === 0) {
-            return interaction.reply({ embeds: [createEmbed('❌ Error', 'There is no song currently playing!', '#FF4444')], ephemeral: true });
-        }
-        serverQueue.player.stop();
-        return interaction.reply({ embeds: [createEmbed('⏭️ Skipped', 'Skipped to the next song in the queue!', '#FFA500')] });
-    }
-
-    if (commandName === 'stop') {
-        const connection = getVoiceConnection(guild.id);
-        if (!connection) {
+        const songData = await fetchUniversalSong(query);
+        if (!songData) {
+            return interaction.editReply({
+                embeds: [createGlowingEmbed({
+                    title: '🔍 Song Unavailable',
