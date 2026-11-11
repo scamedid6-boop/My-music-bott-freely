@@ -39,7 +39,6 @@ client.on('ready', async () => {
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
         
-        // Bot jitne bhi servers mein hai, sab mein apne aap commands daal dega
         client.guilds.cache.forEach(async (guild) => {
             await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: commands });
             console.log(`Server [${guild.name}] mein commands add ho gaye!`);
