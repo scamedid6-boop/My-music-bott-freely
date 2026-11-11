@@ -1,5 +1,5 @@
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } = require('discord.js');
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, getVoiceConnection, NoSubscriberBehavior } = require('@discordjs/voice');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, getVoiceConnection, NoSubscriberBehavior, StreamType } = require('@discordjs/voice');
 const yts = require('yt-search');
 const ytdl = require('@distube/ytdl-core');
 const express = require('express');
@@ -63,15 +63,21 @@ async function playNextSong(guildId) {
     const serverQueue = queues.get(guildId);
     if (!serverQueue || serverQueue.songs.length === 0) return;
 
-    const song = serverQueue.songs[0];
+    const song = serverQueue.songs;
     try {
         const stream = ytdl(song.url, {
             filter: 'audioonly',
             quality: 'highestaudio',
-            highWaterMark: 1 << 25
+            highWaterMark: 1 << 25,
+            dlChunkSize: 0
         });
 
-        const resource = createAudioResource(stream);
+        const resource = createAudioResource(stream, {
+            inputType: StreamType.Arbitrary,
+            inlineVolume: true
+        });
+        resource.volume.setVolume(1);
+
         serverQueue.player.play(resource);
 
         const embed = createEmbed(
@@ -105,6 +111,7 @@ client.on('interactionCreate', async interaction => {
             channelId: channel.id,
             guildId: guild.id,
             adapterCreator: guild.voiceAdapterCreator,
+            selfDeaf: false
         });
 
         return interaction.reply({ embeds: [createEmbed('✅ Connected', `**${channel.name}** mein aa gaya hoon! Ab \`/play\` se koi bhi gana bajayein.`, '#00FF88')] });
@@ -127,14 +134,14 @@ client.on('interactionCreate', async interaction => {
                     title: info.videoDetails.title,
                     url: info.videoDetails.video_url,
                     duration: info.videoDetails.lengthSeconds + 's',
-                    thumbnail: info.videoDetails.thumbnails[0]?.url || null
+                    thumbnail: info.videoDetails.thumbnails?.url || null
                 };
             } else {
                 const searchResults = await yts(query);
                 if (!searchResults || !searchResults.videos || searchResults.videos.length === 0) {
                     return interaction.editReply({ embeds: [createEmbed('❌ Not Found', 'Yeh gaana nahi mila bhai, koi doosra naam try karo.', '#FF4444')] });
                 }
-                const video = searchResults.videos[0];
+                const video = searchResults.videos;
                 songInfo = {
                     title: video.title,
                     url: video.url,
@@ -151,6 +158,7 @@ client.on('interactionCreate', async interaction => {
                     channelId: channel.id,
                     guildId: guild.id,
                     adapterCreator: guild.voiceAdapterCreator,
+                    selfDeaf: false
                 });
 
                 connection.subscribe(player);
