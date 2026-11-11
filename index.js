@@ -16,7 +16,6 @@ const client = new Client({
 });
 
 const queues = new Map();
-const GUILD_ID = '1562043430203428866';
 
 const commands = [
     new SlashCommandBuilder().setName('join').setDescription('Joins your voice channel and start playing music'),
@@ -38,19 +37,21 @@ client.on('ready', async () => {
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
-        await rest.put(Routes.applicationCommands(client.user.id), { body: [] });
-        await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: commands });
-        console.log('Saare slash commands 1 second mein server par add ho gaye!');
+        await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+        
+        // Bot jitne bhi servers mein hai, sab mein apne aap commands daal dega
+        client.guilds.cache.forEach(async (guild) => {
+            await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: commands });
+            console.log(`Server [${guild.name}] mein commands add ho gaye!`);
+        });
     } catch (error) {
-        console.error(error);
+        console.error('Command Error:', error);
     }
 });
 
 async function playNextSong(guildId) {
     const serverQueue = queues.get(guildId);
-    if (!serverQueue || serverQueue.songs.length === 0) {
-        return;
-    }
+    if (!serverQueue || serverQueue.songs.length === 0) return;
 
     const song = serverQueue.songs[0];
     try {
