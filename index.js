@@ -1,7 +1,6 @@
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
-const { Player } = require('discord-player');
-const { DefaultExtractors } = require('@discord-player/extractor');
-const { YoutubeiExtractor } = require('discord-player-youtubei');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, getVoiceConnection, NoSubscriberBehavior } = require('@discordjs/voice');
+const play = require('play-dl');
 const express = require('express');
 
 const app = express();
@@ -16,13 +15,13 @@ const client = new Client({
     ]
 });
 
-const player = new Player(client);
+const queues = new Map();
 
 const commands = [
     new SlashCommandBuilder().setName('join').setDescription('Joins your voice channel and start playing music'),
     new SlashCommandBuilder()
         .setName('play')
-        .setDescription('Play any song from YouTube, Spotify, or SoundCloud')
+        .setDescription('Play any song from YouTube or SoundCloud')
         .addStringOption(option => 
             option.setName('song')
                 .setDescription('Enter song name or link')
@@ -36,14 +35,6 @@ const commands = [
 client.on('ready', async () => {
     console.log(`${client.user.tag} taiyar hai!`);
 
-    try {
-        await player.extractors.register(YoutubeiExtractor, {});
-        await player.extractors.loadMulti(DefaultExtractors);
-        console.log('Music engines load ho gaye!');
-    } catch (e) {
-        console.log('Extractor warning:', e.message);
-    }
-
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
@@ -53,37 +44,42 @@ client.on('ready', async () => {
     }
 });
 
-player.events.on('playerStart', (queue, track) => {
-    queue.metadata.channel.send(`🎶 **Ab Baj Raha Hai:** ${track.title} \n⏱️ **Duration:** ${track.duration}`);
-});
+async function playNextSong(guildId) {
+    const serverQueue = queues.get(guildId);
+    if (!serverQueue || serverQueue.songs.length === 0) {
+        return;
+    }
 
-player.events.on('playerError', (queue, error) => {
-    console.log(`Player Error: ${error.message}`);
-    queue.metadata.channel.send('⚠️ Is gaane mein thodi dikkat aayi, agla gaana laga raha hoon...');
-});
+    const song = serverQueue.songs[0];
+    try {
+        const stream = await play.stream(song.url);
+        const resource = createAudioResource(stream.stream, { inputType: stream.type });
+        serverQueue.player.play(resource);
+        serverQueue.textChannel.send(`🎶 **Ab Baj Raha Hai:** ${song.title}`);
+    } catch (err) {
+        console.error('Stream Error:', err);
+        serverQueue.textChannel.send(`⚠️ **${song.title}** bajane mein dikkat aayi, agla gaana laga raha hoon...`);
+        serverQueue.songs.shift();
+        playNextSong(guildId);
+    }
+}
 
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
 
-    const { commandName } = interaction;
+    const { commandName, guild } = interaction;
 
     if (commandName === 'join') {
         const channel = interaction.member.voice.channel;
         if (!channel) return interaction.reply({ content: '❌ Bhai, pehle kisi Voice Channel mein join ho jao!', ephemeral: true });
 
-        try {
-            const queue = player.nodes.create(interaction.guild, {
-                metadata: { channel: interaction.channel },
-                selfDeaf: true,
-                volume: 80,
-                leaveOnEmpty: false,
-                leaveOnEnd: false
-            });
-            if (!queue.connection) await queue.connect(channel);
-            return interaction.reply(`✅ **${channel.name}** mein aa gaya hoon! Ab \`/play\` se koi bhi gana bajayein.`);
-        } catch (e) {
-            return interaction.reply('❌ Voice channel join karne mein dikkat aayi.');
-        }
+        joinVoiceChannel({
+            channelId: channel.id,
+            guildId: guild.id,
+            adapterCreator: guild.voiceAdapterCreator,
+        });
+
+        return interaction.reply(`✅ **${channel.name}** mein aa gaya hoon! Ab \`/play\` se koi bhi gana bajayein.`);
     }
 
     if (commandName === 'play') {
@@ -91,40 +87,82 @@ client.on('interactionCreate', async interaction => {
         if (!channel) return interaction.reply({ content: '❌ Bhai, pehle kisi Voice Channel mein join ho jao!', ephemeral: true });
 
         await interaction.deferReply();
-
         const query = interaction.options.getString('song');
 
         try {
-            const { track } = await player.play(channel, query, {
-                nodeOptions: {
-                    metadata: { channel: interaction.channel },
-                    selfDeaf: true,
-                    volume: 80,
-                    leaveOnEmpty: false,
-                    leaveOnEnd: false
+            let songInfo;
+            if (play.yt_validate(query) === 'video') {
+                const info = await play.video_info(query);
+                songInfo = { title: info.video_details.title, url: info.video_details.url };
+            } else {
+                const searchResults = await play.search(query, { limit: 1 });
+                if (!searchResults || searchResults.length === 0) {
+                    return interaction.editReply('❌ Yeh gaana nahi mila bhai, koi doosra naam try karo.');
                 }
-            });
+                songInfo = { title: searchResults[0].title, url: searchResults[0].url };
+            }
 
-            return interaction.editReply(`✅ **Queue mein add ho gaya:** ${track.title}`);
-        } catch (e) {
-            console.error(e);
-            return interaction.editReply('❌ Yeh gana load nahi ho paya, koi doosra naam ya link try karein.');
+            let serverQueue = queues.get(guild.id);
+
+            if (!serverQueue) {
+                const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
+                const connection = joinVoiceChannel({
+                    channelId: channel.id,
+                    guildId: guild.id,
+                    adapterCreator: guild.voiceAdapterCreator,
+                });
+
+                connection.subscribe(player);
+
+                serverQueue = {
+                    textChannel: interaction.channel,
+                    voiceChannel: channel,
+                    connection: connection,
+                    player: player,
+                    songs: []
+                };
+
+                queues.set(guild.id, serverQueue);
+                serverQueue.songs.push(songInfo);
+
+                player.on(AudioPlayerStatus.Idle, () => {
+                    serverQueue.songs.shift();
+                    playNextSong(guild.id);
+                });
+
+                player.on('error', error => {
+                    console.error('Player Error:', error);
+                    serverQueue.songs.shift();
+                    playNextSong(guild.id);
+                });
+
+                await interaction.editReply(`✅ **Start kar raha hoon:** ${songInfo.title}`);
+                playNextSong(guild.id);
+            } else {
+                serverQueue.songs.push(songInfo);
+                return interaction.editReply(`✅ **Queue mein add ho gaya:** ${songInfo.title}`);
+            }
+        } catch (error) {
+            console.error(error);
+            return interaction.editReply('❌ Gaana search karne mein thodi dikkat aayi, dubara try karein.');
         }
     }
 
     if (commandName === 'skip') {
-        const queue = player.nodes.get(interaction.guild.id);
-        if (!queue || !queue.isPlaying()) return interaction.reply({ content: '❌ Abhi koi gana nahi baj raha hai!', ephemeral: true });
-        
-        queue.node.skip();
+        const serverQueue = queues.get(guild.id);
+        if (!serverQueue || serverQueue.songs.length === 0) {
+            return interaction.reply({ content: '❌ Abhi koi gana nahi baj raha hai!', ephemeral: true });
+        }
+        serverQueue.player.stop();
         return interaction.reply('⏭️ Agla gaana laga diya gaya hai!');
     }
 
     if (commandName === 'stop') {
-        const queue = player.nodes.get(interaction.guild.id);
-        if (!queue) return interaction.reply({ content: '❌ Main abhi kisi voice channel mein nahi hoon!', ephemeral: true });
+        const connection = getVoiceConnection(guild.id);
+        if (!connection) return interaction.reply({ content: '❌ Main abhi kisi voice channel mein nahi hoon!', ephemeral: true });
 
-        queue.delete();
+        queues.delete(guild.id);
+        connection.destroy();
         return interaction.reply('🛑 Gaana rok diya gaya hai aur main channel se nikal gaya hoon.');
     }
 
