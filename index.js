@@ -49,23 +49,39 @@ function formatDuration(seconds) {
 }
 
 async function searchSong(query) {
-    const res = await fetch(`https://saavn.dev{encodeURIComponent(query)}`);
-    const json = await res.json();
-    if (!json.success || !json.data || !json.data.results || json.data.results.length === 0) {
-        return null;
-    }
-    const track = json.data.results.at(0);
-    const downloadUrl = track.downloadUrl ? track.downloadUrl.at(-1).url : null;
-    const thumbnail = track.image ? track.image.at(-1).url : null;
-    if (!downloadUrl) return null;
+    const apiUrls = [
+        `https://vercel.app{encodeURIComponent(query)}`,
+        `https://sumit.co{encodeURIComponent(query)}`
+    ];
 
-    return {
-        title: track.name.replace(/&quot;/g, '"').replace(/&amp;/g, '&'),
-        url: downloadUrl,
-        pageUrl: track.url || 'https://jiosaavn.com',
-        duration: formatDuration(track.duration || 0),
-        thumbnail: thumbnail
-    };
+    for (const apiUrl of apiUrls) {
+        try {
+            const res = await fetch(apiUrl);
+            if (!res.ok) continue;
+            const json = await res.json();
+            const results = json?.data?.results;
+            if (!results || results.length === 0) continue;
+
+            const track = results.at(0);
+            const downloadList = track.downloadUrl;
+            const downloadUrl = Array.isArray(downloadList) ? downloadList.at(-1)?.url || downloadList.at(-1)?.link : null;
+            const imageList = track.image;
+            const thumbnail = Array.isArray(imageList) ? imageList.at(-1)?.url || imageList.at(-1)?.link : null;
+
+            if (downloadUrl) {
+                return {
+                    title: (track.name || track.title || query).replace(/&quot;/g, '"').replace(/&amp;/g, '&'),
+                    url: downloadUrl,
+                    pageUrl: track.url || 'https://jiosaavn.com',
+                    duration: formatDuration(Number(track.duration) || 0),
+                    thumbnail: thumbnail
+                };
+            }
+        } catch (e) {
+            console.log('Trying backup music server...');
+        }
+    }
+    return null;
 }
 
 client.on('ready', async () => {
