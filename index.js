@@ -177,4 +177,9 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-client.login(process.env.DISCORD_TOKEN);
+console.log("Token check:", process.env.DISCORD_TOKEN ? "Token mil gaya!" : "Token GAYAB hai!");
+
+client.login(process.env.DISCORD_TOKEN).catch(err => {
+    console.error("Login Error:", err);
+});
+
