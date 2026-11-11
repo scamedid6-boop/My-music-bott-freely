@@ -114,7 +114,7 @@ client.on('interactionCreate', async interaction => {
 
     if (commandName === 'skip') {
         const queue = player.nodes.get(interaction.guild.id);
-        if (!queue || !queue.isPlaying()) return interaction.reply({ content: '❌ Abhi koi gana nahi baj raha hai!', ephemeral true });
+        if (!queue || !queue.isPlaying()) return interaction.reply({ content: '❌ Abhi koi gana nahi baj raha hai!', ephemeral: true });
         
         queue.node.skip();
         return interaction.reply('⏭️ Agla gaana laga diya gaya hai!');
