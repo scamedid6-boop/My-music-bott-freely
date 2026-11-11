@@ -63,7 +63,7 @@ async function playNextSong(guildId) {
     const serverQueue = queues.get(guildId);
     if (!serverQueue || serverQueue.songs.length === 0) return;
 
-    const song = serverQueue.songs;
+    const song = serverQueue.songs[0];
     try {
         const stream = ytdl(song.url, {
             filter: 'audioonly',
@@ -127,14 +127,14 @@ client.on('interactionCreate', async interaction => {
                     title: info.videoDetails.title,
                     url: info.videoDetails.video_url,
                     duration: info.videoDetails.lengthSeconds + 's',
-                    thumbnail: info.videoDetails.thumbnails?.url || null
+                    thumbnail: info.videoDetails.thumbnails[0]?.url || null
                 };
             } else {
                 const searchResults = await yts(query);
                 if (!searchResults || !searchResults.videos || searchResults.videos.length === 0) {
                     return interaction.editReply({ embeds: [createEmbed('❌ Not Found', 'Yeh gaana nahi mila bhai, koi doosra naam try karo.', '#FF4444')] });
                 }
-                const video = searchResults.videos;
+                const video = searchResults.videos[0];
                 songInfo = {
                     title: video.title,
                     url: video.url,
