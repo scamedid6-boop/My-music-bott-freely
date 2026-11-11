@@ -5,7 +5,7 @@ const { YoutubeiExtractor } = require('discord-player-youtubei');
 const express = require('express');
 
 const app = express();
-app.get('/', (req, res) => res.send('SAKSHAM MUSIC 24/7 Non-Stop Live! 🎵'));
+app.get('/', (req, res) => res.send('SAKSHAM MUSIC 24/7 Live! 🎵'));
 app.listen(process.env.PORT || 3000);
 
 const client = new Client({
@@ -16,12 +16,7 @@ const client = new Client({
     ]
 });
 
-const player = new Player(client, {
-    ytdlOptions: {
-        quality: 'highestaudio',
-        highWaterMark: 1 << 25
-    }
-});
+const player = new Player(client);
 
 const commands = [
     new SlashCommandBuilder().setName('join').setDescription('Joins your voice channel and start playing music'),
@@ -41,13 +36,18 @@ const commands = [
 client.on('ready', async () => {
     console.log(`${client.user.tag} taiyar hai!`);
 
-    await player.extractors.register(YoutubeiExtractor, {});
-    await player.extractors.loadMulti(DefaultExtractors);
+    try {
+        await player.extractors.register(YoutubeiExtractor, {});
+        await player.extractors.loadMulti(DefaultExtractors);
+        console.log('Music engines load ho gaye!');
+    } catch (e) {
+        console.log('Extractor warning:', e.message);
+    }
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('Saare slash commands aur music engines load ho gaye!');
+        console.log('Saare slash commands register ho gaye!');
     } catch (error) {
         console.error(error);
     }
@@ -114,7 +114,7 @@ client.on('interactionCreate', async interaction => {
 
     if (commandName === 'skip') {
         const queue = player.nodes.get(interaction.guild.id);
-        if (!queue || !queue.isPlaying()) return interaction.reply({ content: '❌ Abhi koi gana nahi baj raha hai!', ephemeral: true });
+        if (!queue || !queue.isPlaying()) return interaction.reply({ content: '❌ Abhi koi gana nahi baj raha hai!', ephemeral true });
         
         queue.node.skip();
         return interaction.reply('⏭️ Agla gaana laga diya gaya hai!');
@@ -138,4 +138,3 @@ client.on('interactionCreate', async interaction => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
-
