@@ -49,38 +49,56 @@ function formatDuration(seconds) {
 }
 
 async function searchSong(query) {
-    const apiUrls = [
-        `https://vercel.app{encodeURIComponent(query)}`,
-        `https://sumit.co{encodeURIComponent(query)}`
-    ];
+    try {
+        // 1. Official JioSaavn Direct Search API
+        const saavnUrl = `https://jiosaavn.com{encodeURIComponent(query)}`;
+        const res = await fetch(saavnUrl, {
+            headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
+        const data = await res.json();
+        const track = data?.results?.[0];
 
-    for (const apiUrl of apiUrls) {
-        try {
-            const res = await fetch(apiUrl);
-            if (!res.ok) continue;
-            const json = await res.json();
-            const results = json?.data?.results;
-            if (!results || results.length === 0) continue;
+        if (track && track.id) {
+            const detailUrl = `https://jiosaavn.com{track.id}`;
+            const detailRes = await fetch(detailUrl, {
+                headers: { 'User-Agent': 'Mozilla/5.0' }
+            });
+            const detailData = await detailRes.json();
+            const songObj = detailData?.songs?.[0];
 
-            const track = results.at(0);
-            const downloadList = track.downloadUrl;
-            const downloadUrl = Array.isArray(downloadList) ? downloadList.at(-1)?.url || downloadList.at(-1)?.link : null;
-            const imageList = track.image;
-            const thumbnail = Array.isArray(imageList) ? imageList.at(-1)?.url || imageList.at(-1)?.link : null;
-
-            if (downloadUrl) {
+            if (songObj && songObj.more_info?.vlink) {
                 return {
-                    title: (track.name || track.title || query).replace(/&quot;/g, '"').replace(/&amp;/g, '&'),
-                    url: downloadUrl,
-                    pageUrl: track.url || 'https://jiosaavn.com',
-                    duration: formatDuration(Number(track.duration) || 0),
-                    thumbnail: thumbnail
+                    title: (songObj.title || query).replace(/&quot;/g, '"').replace(/&amp;/g, '&'),
+                    url: songObj.more_info.vlink,
+                    pageUrl: songObj.perma_url || 'https://jiosaavn.com',
+                    duration: formatDuration(Number(songObj.more_info.duration) || 0),
+                    thumbnail: songObj.image ? songObj.image.replace('150x150', '500x500') : null
                 };
             }
-        } catch (e) {
-            console.log('Trying backup music server...');
         }
+    } catch (e) {
+        console.log('Saavn fallback to Deezer...');
     }
+
+    try {
+        // 2. Official Deezer Direct API (Global Songs Backup)
+        const deezerRes = await fetch(`https://deezer.com{encodeURIComponent(query)}&limit=1`);
+        const deezerData = await deezerRes.json();
+        const dTrack = deezerData?.data?.[0];
+
+        if (dTrack && dTrack.preview) {
+            return {
+                title: `${dTrack.title} - ${dTrack.artist?.name || ''}`,
+                url: dTrack.preview,
+                pageUrl: dTrack.link || 'https://deezer.com',
+                duration: formatDuration(Number(dTrack.duration) || 30),
+                thumbnail: dTrack.album?.cover_big || dTrack.album?.cover_medium || null
+            };
+        }
+    } catch (e) {
+        console.log('Deezer search error:', e.message);
+    }
+
     return null;
 }
 
@@ -221,20 +239,3 @@ client.on('interactionCreate', async interaction => {
     if (commandName === 'stop') {
         const connection = getVoiceConnection(guild.id);
         if (!connection) {
-            return interaction.reply({ embeds: [createEmbed('❌ Error', 'I am not connected to any voice channel!', '#FF4444')], ephemeral: true });
-        }
-        queues.delete(guild.id);
-        connection.destroy();
-        return interaction.reply({ embeds: [createEmbed('🛑 Stopped', 'Music stopped and disconnected from the voice channel.', '#FF4444')] });
-    }
-
-    if (commandName === 'owner') {
-        return interaction.reply({ embeds: [createEmbed('👑 Bot Owner', 'This bot is owned and created by **Saksham**!', '#FFD700')] });
-    }
-
-    if (commandName === 'hello') {
-        return interaction.reply({ embeds: [createEmbed('👋 Hello!', 'I am **SAKSHAM MUSIC** — your 24/7 non-stop music bot! 🎧', '#00FF88')] });
-    }
-});
-
-client.login(process.env.DISCORD_TOKEN);
