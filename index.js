@@ -1,6 +1,5 @@
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, getVoiceConnection, NoSubscriberBehavior } = require('@discordjs/voice');
-const play = require('play-dl');
 const express = require('express');
 
 const app = express();
@@ -43,16 +42,34 @@ function createEmbed(title, description, color = '#00FF88', thumbnail = null) {
     return embed;
 }
 
+function formatDuration(seconds) {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+}
+
+async function searchSong(query) {
+    const res = await fetch(`https://saavn.dev{encodeURIComponent(query)}`);
+    const json = await res.json();
+    if (!json.success || !json.data || !json.data.results || json.data.results.length === 0) {
+        return null;
+    }
+    const track = json.data.results.at(0);
+    const downloadUrl = track.downloadUrl ? track.downloadUrl.at(-1).url : null;
+    const thumbnail = track.image ? track.image.at(-1).url : null;
+    if (!downloadUrl) return null;
+
+    return {
+        title: track.name.replace(/&quot;/g, '"').replace(/&amp;/g, '&'),
+        url: downloadUrl,
+        pageUrl: track.url || 'https://jiosaavn.com',
+        duration: formatDuration(track.duration || 0),
+        thumbnail: thumbnail
+    };
+}
+
 client.on('ready', async () => {
     console.log(`${client.user.tag} is online and ready!`);
-
-    try {
-        const scClientID = await play.getFreeClientID();
-        await play.setToken({ soundcloud: { client_id: scClientID } });
-        console.log('SoundCloud Free Audio Engine Ready!');
-    } catch (e) {
-        console.log('SC Init Warning:', e.message);
-    }
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
@@ -72,18 +89,14 @@ async function playNextSong(guildId) {
 
     const song = serverQueue.songs.at(0);
     try {
-        const stream = await play.stream(song.url);
-        const resource = createAudioResource(stream.stream, {
-            inputType: stream.type,
-            inlineVolume: true
-        });
+        const resource = createAudioResource(song.url, { inlineVolume: true });
         resource.volume.setVolume(1);
 
         serverQueue.player.play(resource);
 
         const embed = createEmbed(
             '🎶 Now Playing',
-            `**[${song.title}](${song.url})**\n⏱️ **Duration:** ${song.duration}`,
+            `**[${song.title}](${song.pageUrl})**\n⏱️ **Duration:** ${song.duration}`,
             '#FF007F',
             song.thumbnail
         );
@@ -128,22 +141,10 @@ client.on('interactionCreate', async interaction => {
         const query = interaction.options.getString('song');
 
         try {
-            const searchResults = await play.search(query, {
-                source: { soundcloud: 'tracks' },
-                limit: 1
-            });
-
-            if (!searchResults || searchResults.length === 0) {
+            const songInfo = await searchSong(query);
+            if (!songInfo) {
                 return interaction.editReply({ embeds: [createEmbed('❌ Not Found', 'No results found for this song. Please try another name.', '#FF4444')] });
             }
-
-            const track = searchResults.at(0);
-            const songInfo = {
-                title: track.name,
-                url: track.url,
-                duration: track.durationRaw || 'Live',
-                thumbnail: track.thumbnail || null
-            };
 
             let serverQueue = queues.get(guild.id);
 
@@ -180,11 +181,11 @@ client.on('interactionCreate', async interaction => {
                     playNextSong(guild.id);
                 });
 
-                await interaction.editReply({ embeds: [createEmbed('🎧 Starting Music', `**[${songInfo.title}](${songInfo.url})**`, '#00BFFF', songInfo.thumbnail)] });
+                await interaction.editReply({ embeds: [createEmbed('🎧 Starting Music', `**[${songInfo.title}](${songInfo.pageUrl})**`, '#00BFFF', songInfo.thumbnail)] });
                 playNextSong(guild.id);
             } else {
                 serverQueue.songs.push(songInfo);
-                return interaction.editReply({ embeds: [createEmbed('✅ Added to Queue', `**[${songInfo.title}](${songInfo.url})**\n⏱️ **Duration:** ${songInfo.duration}`, '#00FF88', songInfo.thumbnail)] });
+                return interaction.editReply({ embeds: [createEmbed('✅ Added to Queue', `**[${songInfo.title}](${songInfo.pageUrl})**\n⏱️ **Duration:** ${songInfo.duration}`, '#00FF88', songInfo.thumbnail)] });
             }
         } catch (error) {
             console.error(error);
